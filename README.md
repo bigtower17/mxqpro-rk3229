@@ -1,14 +1,14 @@
-# Riuso e analisi di un TV box "MXQ PRO" (Rockchip RK3229)
+# Reclaiming an "MXQ PRO" TV box (Rockchip RK3229)
 
-Reverse engineering e riuso di un TV box Android cinese economico, venduto come
-"MXQ PRO". Dal box fermo in un cassetto a: identificazione reale dell'hardware,
-analisi della ROM (con una backdoor pubblicitaria preinstallata), pulizia del
-sistema, uso come console retro con un driver custom per il pad, e infine
-sostituzione completa di Android con Linux (Armbian/Ubuntu) sulla eMMC.
+Reverse engineering and repurposing of a cheap Chinese Android TV box sold as
+"MXQ PRO". From a box sitting in a drawer to: identifying the real hardware,
+analyzing the stock ROM (which ships a preinstalled adware backdoor), debloating it,
+using it as a retro console with a custom gamepad driver, and finally replacing
+Android with Linux (Armbian/Ubuntu) on the eMMC.
 
-> Scritto per chi vuole rifare qualcosa di simile su un box RK3228/RK3229. Adatta
-> tutti i comandi al tuo dispositivo. **Lavori a tuo rischio**: puoi rendere il box
-> temporaneamente non avviabile (recuperabile, vedi la sezione backup).
+> Written for anyone doing the same on an RK3228/RK3229 box. Adapt every command to
+> your device. **At your own risk**: you can make the box temporarily unbootable
+> (recoverable — see the backup section).
 
 <p align="center">
   <img src="docs/img/retroarch-menu.png" width="32%" alt="RetroArch">
@@ -18,86 +18,87 @@ sostituzione completa di Android con Linux (Armbian/Ubuntu) sulla eMMC.
 
 ---
 
-## 1. Cos'è davvero il box
+## 1. What the box really is
 
-"MXQ PRO" è solo un nome commerciale riciclato da decine di produttori. L'hardware
-reale, letto da ADB:
+"MXQ PRO" is just a marketing name reused by dozens of vendors. The real hardware,
+read over ADB:
 
-| Voce | Valore |
+| Item | Value |
 |---|---|
-| SoC | **Rockchip RK3229** (4× ARM Cortex-A7, 32 bit, `armeabi-v7a`) |
-| GPU | Mali-400 MP2 (solo OpenGL ES 2.0) |
+| SoC | **Rockchip RK3229** (4× ARM Cortex-A7, 32-bit, `armeabi-v7a`) |
+| GPU | Mali-400 MP2 (OpenGL ES 2.0 only) |
 | RAM | 1 GB |
-| Storage | eMMC 8 GB (`/dev/block/mmcblk0`, 7634944 KB) |
-| Wi-Fi | SSV6051 (`ssv6xxx`) — spesso senza monitor mode/injection |
-| Display frontale | driver `FD628_Demo` |
-| OS di fabbrica | Android 6.0.1 `userdebug`, **test-keys**, build `MV3.20170626` (2017) |
-| Kernel | Linux 3.10 (vendor Rockchip) |
+| Storage | 8 GB eMMC (`/dev/block/mmcblk0`, 7634944 KB) |
+| Wi-Fi | SSV6051 (`ssv6xxx`) — usually no monitor mode/injection |
+| Front display | `FD628_Demo` driver |
+| Stock OS | Android 6.0.1 `userdebug`, **test-keys**, build `MV3.20170626` (2017) |
+| Kernel | Linux 3.10 (Rockchip vendor) |
 | SELinux | **permissive** |
-| Root | `su` setuid già presente in `/system/xbin` + app "Superuser" |
+| Root | setuid `su` already in `/system/xbin` + "Superuser" app |
 
-Verifica (le etichette mentono spesso su RAM/Android/"4K"):
+Verify it (the labels routinely lie about RAM/Android/"4K"):
 
 ```sh
 getprop | grep -E 'ro.board.platform|ro.product.(model|device)|ro.build.version|ro.rk.(cpu|soc)'
 cat /proc/cpuinfo        # Hardware : Rockchip RK3229
-cat /proc/meminfo        # MemTotal reale
+cat /proc/meminfo        # real MemTotal
 ```
 
 ---
 
-## 2. Accesso: abilitare ADB via rete
+## 2. Access: enabling ADB over the network
 
-Questi box non hanno "Debug wireless" (è di Android 11+). Con root preinstallato si
-abilita ADB TCP a mano. Da un emulatore di terminale sul box (es. *Terminal Emulator
-for Android* di jackpal, `jackpal.androidterm`; **non** Termux, che richiede Android 7+):
+These boxes have no "Wireless debugging" (that's Android 11+). With the preinstalled
+root you enable ADB over TCP by hand. From a terminal emulator on the box (e.g.
+*Terminal Emulator for Android* by jackpal, `jackpal.androidterm`; **not** Termux,
+which needs Android 7+):
 
 ```sh
 su
-setprop persist.adb.tcp.port 5555   # persiste al riavvio
+setprop persist.adb.tcp.port 5555   # persists across reboots
 setprop service.adb.tcp.port 5555
 stop adbd; start adbd
 ```
 
-Dal PC: `adb connect <ip-box>:5555` e accettare il popup RSA sulla TV. Attenzione a non
-confondere il box con altri dispositivi con ADB in rete (es. una smart TV): `adb
-devices -l` mostra `model:` e `device:`.
+From the PC: `adb connect <box-ip>:5555` and accept the RSA prompt on the TV. Don't
+confuse the box with other network-ADB devices (e.g. a smart TV): `adb devices -l`
+shows `model:` and `device:`.
 
-Note (Windows + Git Bash): usare `MSYS_NO_PATHCONV=1` e path `C:/…` per `adb push`,
-altrimenti i path assoluti `/data/...` vengono riscritti.
+Notes (Windows + Git Bash): use `MSYS_NO_PATHCONV=1` and `C:/…` paths for `adb push`,
+otherwise absolute `/data/...` paths get rewritten.
 
 ---
 
-## 3. Analisi della ROM: la backdoor Adups FOTA
+## 3. ROM analysis: the Adups FOTA backdoor
 
-Il risultato più interessante. La ROM include **Adups FOTA** (`com.adups.fota` +
-`com.adups.fota.sysoper`, quest'ultimo con UID `system`), un "servizio di
-aggiornamento" che è in realtà una piattaforma di installazione silenziosa di app.
+The most interesting finding. The ROM ships **Adups FOTA** (`com.adups.fota` +
+`com.adups.fota.sysoper`, the latter running as UID `system`): an "update service"
+that is really a silent app-installation platform.
 
-Decompilando `FotaUpdate.apk` (JADX) si trova (`com/adups/fota/a/b.java`) che gli URL
-sono costruiti carattere per carattere per non comparire tra le stringhe:
+Decompiling `FotaUpdate.apk` (JADX) shows (`com/adups/fota/a/b.java`) that the URLs are
+built character-by-character so they don't show up among the strings:
 
 ```
-https://fota5.adups.com   (e .cn)
+https://fota5.adups.com   (and .cn)
 /otainter-5.0/fota5/apkDownlod.do  apkUpgrade.do  apkGroup.do  submitReport.do ...
 ```
 
-Comportamento verificato nel codice:
+Behavior confirmed in the code:
 
-- Scarica APK indicate dal server e le **installa in silenzio** con `pm install -r`
+- Downloads APKs chosen by the server and **installs them silently** with `pm install -r`
   (`com/adups/fota/update/download/g.java` → `Command.with(context).sysRun("pm install -r " + path)`).
-  Il modello `AdditionalModel` ha campi `advUserId`, `advertiseName`, `advApkId`:
-  sono **app pubblicitarie di inserzionisti**.
-- Esegue comandi arbitrari con privilegi `system` (`Command.sysRun`, bind a
+  The `AdditionalModel` model has `advUserId`, `advertiseName`, `advApkId` fields:
+  these are **advertiser APKs**.
+- Runs arbitrary commands with `system` privileges (`Command.sysRun`, bound to
   `com.adups.fota.sysoper`).
-- **Disattiva la verifica app di Google**: `settings put global package_verifier_enable 0`.
-- Invia al server **IMEI e MAC** (`ro.fota.id=mac`), versioni firmware, esiti
-  installazioni; ha receiver su `PACKAGE_ADDED/REMOVED/REPLACED` e `BOOT_COMPLETED`.
+- **Disables Google's app verification**: `settings put global package_verifier_enable 0`.
+- Sends **IMEI and MAC** to the server (`ro.fota.id=mac`), firmware versions and install
+  results; has receivers on `PACKAGE_ADDED/REMOVED/REPLACED` and `BOOT_COMPLETED`.
 
-Questa famiglia (Adups/FOTA) è nota per incidenti di raccolta dati di massa su device
-economici. Qui è attiva di fabbrica.
+This family (Adups/FOTA) is known for mass data-collection incidents on cheap devices.
+Here it is active out of the box.
 
-### Riprodurre l'analisi
+### Reproduce the analysis
 
 ```sh
 adb pull /system/app/FotaUpdate/FotaUpdate.apk
@@ -107,9 +108,9 @@ grep -rnE "adups|pm install|package_verifier|getDeviceId|sysRun" out_fota/source
 
 ---
 
-## 4. Pulizia del sistema (debloat)
+## 4. Debloating
 
-Reversibile: `pm disable` si riattiva con `pm enable`.
+Reversible: anything `pm disable` is undone with `pm enable`.
 
 ```sh
 su
@@ -117,190 +118,188 @@ for p in com.adups.fota com.adups.fota.sysoper android.rockchip.update.service \
          com.rockchip.devicetest com.ftest com.cghs.stresstest; do
   am force-stop $p; pm disable $p
 done
-settings put global package_verifier_enable 1          # ri-abilita la verifica app
+settings put global package_verifier_enable 1          # re-enable app verification
 mount -o remount,rw /system
 printf '0.0.0.0 fota5.adups.com\n0.0.0.0 fota5.adups.cn\n0.0.0.0 adups.com\n' >> /system/etc/hosts
 ```
 
-Alcune app "persistenti" (es. `StressTest`) ripartono anche da disabilitate: vanno
-rimosse da `/system/priv-app/…` (tenere una copia).
+Some "persistent" apps (e.g. `StressTest`) restart even when disabled: remove them from
+`/system/priv-app/…` (keep a copy).
 
 ---
 
-## 5. Uso come console retro
+## 5. As a retro console
 
-### 5.1 RetroArch 32 bit
+### 5.1 32-bit RetroArch
 
-Il SoC è a 32 bit: serve la build **`RetroArch_ra32.apk`** (non aarch64) da
+The SoC is 32-bit: you need the **`RetroArch_ra32.apk`** build (not aarch64) from
 `buildbot.libretro.com/stable/<ver>/android/`.
 
-Resa attesa (≈ Raspberry Pi 2/3): fluidi fino a NES/SNES/GBA/Mega Drive/PS1 e arcade
-d'epoca. **N64/PSP/DC/Saturn** no. Super Mario 64 con Mupen64Plus-Next (impostazioni
-per hardware debole, renderer **non** threaded) gira ~50 fps — ed è il limite massimo.
+Expected performance (≈ Raspberry Pi 2/3): smooth up to NES/SNES/GBA/Mega Drive/PS1 and
+older arcade. **N64/PSP/DC/Saturn** no. Super Mario 64 with Mupen64Plus-Next (low-end
+settings, **non**-threaded renderer) runs ~50 fps — and that's the ceiling.
 
-I core armv7 moderni possono richiedere Android 7+ (simboli `LIBC_N`): su Android 6
-alcuni core non si caricano (`dlopen ... __aeabi_memclr4`). Se un core va in `SIGSEGV`
-all'avvio video è il driver Mali-400 legacy: abbassare/disabilitare le opzioni GPU.
+Modern armv7 cores may require Android 7+ (`LIBC_N` symbols): on Android 6 some cores
+won't load (`dlopen ... __aeabi_memclr4`). If a core `SIGSEGV`s on video startup it's
+the legacy Mali-400 driver: lower/disable the core's GPU options.
 
-### 5.2 Driver custom per pad Xbox One / GIP (NACON Pro Compact)
+### 5.2 Custom driver for Xbox One / GIP pads (NACON Pro Compact)
 
-Il kernel 3.10 **non ha** `xpad` per i pad GIP (Xbox One, incluso il NACON): il pad si
-accende a metà, i LED restano spenti, Android non lo legge come gamepad. Soluzione: un
-driver userspace ([`gipd/gipd.c`](gipd/gipd.c)) che:
+The 3.10 kernel **has no** `xpad` for GIP pads (Xbox One, the NACON included): the pad
+half-powers on, the LEDs stay off, Android doesn't see it as a gamepad. Fix: a
+userspace driver ([`gipd/gipd.c`](gipd/gipd.c)) that:
 
-1. reclama l'interfaccia USB via `usbdevfs` (serve root);
-2. invia la sequenza di init GIP (power-on, LED on, … gli stessi pacchetti del driver
-   `xpad` mainline). **Solo dopo questo i LED/logo del pad si accendono**;
-3. ri-espone il pad via `uinput` come Xbox 360 (`045e:028e`), così Android usa il suo
-   keylayout standard.
+1. claims the USB interface via `usbdevfs` (needs root);
+2. sends the GIP init sequence (power-on, LED on, … the same packets as the mainline
+   `xpad` driver). **Only after this do the pad's LEDs/logo turn on**;
+3. re-exposes the pad through `uinput` as an Xbox 360 (`045e:028e`), so Android uses its
+   stock keylayout.
 
-Build (cross, senza NDK, con [Zig](https://ziglang.org)): [`gipd/build.sh`](gipd/build.sh).
-Avvio automatico: aggiunto a `/system/bin/preinstall.sh` (init, a ogni boot come root).
+Build (cross, no NDK, with [Zig](https://ziglang.org)): [`gipd/build.sh`](gipd/build.sh).
+Autostart: added to `/system/bin/preinstall.sh` (init, every boot as root).
 
 ---
 
-## 6. Backup completo (SEMPRE prima di toccare le partizioni)
+## 6. Full backup (ALWAYS, before touching partitions)
 
-Partizioni (`by-name`): `uboot, trust, misc, baseparamer, resource, kernel, boot,
-recovery, backup, metadata, kpanic, system, userdata`. Dump di tutto tranne `userdata`
-(rapido su una chiavetta USB nel box):
+Partitions (`by-name`): `uboot, trust, misc, baseparamer, resource, kernel, boot,
+recovery, backup, metadata, kpanic, system, userdata`. Dump everything except
+`userdata` (fast onto a USB stick in the box):
 
 ```sh
 su
 B=/dev/block/platform/30020000.rksdmmc/by-name
-O=/mnt/media_rw/<UUID-chiavetta>/backup; mkdir -p $O
+O=/mnt/media_rw/<usb-uuid>/backup; mkdir -p $O
 for p in uboot trust misc baseparamer resource kernel boot recovery backup metadata kpanic system; do
   dd if=$B/$p of=$O/$p.img bs=1M
 done
 cd $O && md5sum *.img > md5.txt
 ```
 
-Verifica incrociata: `md5sum` del file == `md5sum` della partizione sul device.
+Cross-check: `md5sum` of the file == `md5sum` of the partition on the device.
 
 ---
 
-## 7. Sostituire Android con Linux (Armbian) sulla eMMC
+## 7. Replacing Android with Linux (Armbian) on eMMC
 
-### 7.1 Vincoli importanti
+### 7.1 Key constraints
 
-- **"Ubuntu Server" ufficiale NON gira**: è solo arm64, il box è armv7 (32 bit).
-  L'equivalente reale è **Armbian per `rk322x-box`** (userland Ubuntu/Debian a 32 bit),
-  da `armbian.com/boards/rk322x-box` (immagini "current" = kernel mainline).
-- **Il mainline può non partire da SD** su alcune schede (schermo nero, niente rete).
-  Le immagini **legacy** (kernel 4.4 vendor) sarebbero più compatibili, ma **gli host
-  storici sono morti** (users.armbian.com/jock, imola, hosthatch): reperibilità scarsa.
-- Questi box **avviano da microSD prima della eMMC**.
+- **Official "Ubuntu Server" will NOT run**: it's arm64 only, the box is armv7
+  (32-bit). The real equivalent is **Armbian for `rk322x-box`** (32-bit Ubuntu/Debian
+  userland), from `armbian.com/boards/rk322x-box` ("current" images = mainline kernel).
+- **Mainline may fail to boot from SD** on some board revisions (black screen, no
+  network). The **legacy** images (4.4 vendor kernel) would be more compatible, but
+  **the historical hosts are dead** (users.armbian.com/jock, imola, hosthatch): poor
+  availability.
+- These boxes **boot from microSD before eMMC**.
 
-### 7.2 Il Multitool
+### 7.2 The Multitool
 
-Ambiente di servizio legacy (di Paolo Sabatino / "jock") che su questi box parte di
-sicuro **e mostra un menu su HDMI**. Modo supportato per backup/restore/scrittura
-eMMC. Sorgente: `github.com/paolosabatino/multitool` (da compilare); immagine
-precompilata dell'autore: `https://apt.undo.it:7243/multitool-rk322x.xz`.
+A legacy service environment (by Paolo Sabatino / "jock") that boots reliably on these
+boxes **and shows a menu over HDMI**. The supported way to backup/restore/write the
+eMMC. Source: `github.com/paolosabatino/multitool` (build it yourself); author's
+prebuilt image: `https://apt.undo.it:7243/multitool-rk322x.xz`.
 Menu: `backup flash`, `restore flash`, `erase flash`, `burn image to flash`,
 `drop to bash shell`, `reboot`, `shutdown`.
 
-### 7.3 Scrivere un'immagine su microSD (Windows, senza software extra)
+### 7.3 Writing an image to microSD (Windows, no extra software)
 
-Decomprimere `.img.xz` con Python (`lzma`) e scrivere sul disco fisico della SD.
-**Pericoloso: sbagliare disco cancella altri dati.** Script con controlli di sicurezza
-(verifica bus USB, dimensione 2–128 GB, non boot/sistema):
-[`scripts/flash_sd.ps1`](scripts/flash_sd.ps1). Punto chiave su Windows: i supporti
-rimovibili non si mettono "offline"; va disabilitato l'automount con `diskpart`
-(`automount disable` + `clean`) **prima** di scrivere, altrimenti Windows rimonta la
-partizione a metà scrittura → "Accesso negato".
+Decompress `.img.xz` with Python (`lzma`) and write to the SD's physical drive.
+**Dangerous: the wrong disk wipes other data.** Script with safety checks (USB bus
+type, 2–128 GB, not boot/system): [`scripts/flash_sd.ps1`](scripts/flash_sd.ps1). Key
+Windows gotcha: removable media can't be set offline; disable automount with `diskpart`
+(`automount disable` + `clean`) **before** writing, or Windows re-mounts the partition
+mid-write → "Access denied".
 
-### 7.4 Flash della eMMC con un Multitool minimale (niente wget/curl)
+### 7.4 Flashing eMMC with a minimal Multitool (no wget/curl)
 
-Questo Multitool aveva **rootfs squashfs read-only** e **niente** `wget`, `curl`,
-`busybox`, `telnetd`; `passwd`/`chpasswd` falliscono ("authentication token
-manipulation error", `/etc/shadow` non scrivibile) → niente SSH classico.
+This Multitool had a **read-only squashfs rootfs** and **no** `wget`, `curl`,
+`busybox`, `telnetd`; `passwd`/`chpasswd` fail ("authentication token manipulation
+error", `/etc/shadow` not writable) → no classic SSH.
 
-Trucco: la shell è **bash**, che apre socket TCP via `/dev/tcp`. Niente programmi di
-download: si streamma l'immagine grezza dal PC direttamente sul device eMMC. Sul PC un
-server TCP "raw" ([`scripts/rawserve.py`](scripts/rawserve.py)) che manda i byte del
-file **già decompresso**:
+Trick: the shell is **bash**, which opens TCP sockets via `/dev/tcp`. No download tool
+needed — stream the raw image from the PC straight onto the eMMC device. On the PC, a
+raw TCP server ([`scripts/rawserve.py`](scripts/rawserve.py)) sends the bytes of the
+**already-decompressed** file:
 
 ```sh
-python rawserve.py 9000 Armbian_rk322x_resolute_minimal.img     # su questo PC (LAN)
+python rawserve.py 9000 Armbian_rk322x_resolute_minimal.img     # on this PC (LAN)
 ```
 
-Sul box (bash del Multitool), device da `cat /proc/partitions`:
-- `mmcblk2` (con `mmcblk2boot0/boot1/rpmb`) = **eMMC interna** → target;
-- `mmcblk0` = la microSD.
+On the box (Multitool bash), find the devices with `cat /proc/partitions`:
+- `mmcblk2` (with `mmcblk2boot0/boot1/rpmb`) = **internal eMMC** → target;
+- `mmcblk0` = the microSD.
 
-Poi, una riga, senza pipe:
+Then, one line, no pipes:
 
 ```sh
-cat < /dev/tcp/<ip-pc>/9000 > /dev/mmcblk2
+cat < /dev/tcp/<pc-ip>/9000 > /dev/mmcblk2
 sync
 ```
 
-Poi `poweroff`, **togliere la microSD**, riaccendere → avvio dalla eMMC. L'immagine
-Armbian è un'immagine disco completa (idbloader + u-boot + boot + root), quindi
-scriverla su tutto `mmcblk2` installa anche il bootloader. Al primo avvio ridimensiona
-il rootfs.
+Then `poweroff`, **remove the microSD**, power on → boots from eMMC. The Armbian image
+is a full disk image (idbloader + u-boot + boot + root), so writing it to the whole
+`mmcblk2` installs the bootloader too. First boot resizes the rootfs.
 
-### 7.5 Accesso headless
+### 7.5 Headless access
 
-Se parte con Ethernet (cavo + DHCP), si entra via SSH. Si ritrova il box cercando il
-suo MAC in ARP e la porta 22 aperta. Se non compare mai in rete e lo schermo resta
-nero → mainline senza driver per questa scheda: ripiego con `restore flash` (Android),
-oppure Linux in chroot Debian/Ubuntu **sopra** Android (funziona sempre; costo: RAM).
+If it comes up with Ethernet (cable + DHCP), log in over SSH. Find the box by its MAC
+in the ARP table and port 22 open. If it never appears on the network and the screen
+stays black → mainline lacks drivers for this board: fall back to `restore flash`
+(Android), or run a Debian/Ubuntu chroot **on top of** Android (always works; cost: RAM).
 
-### 7.6 Esito su questo esemplare
+### 7.6 Outcome on this unit
 
-La stessa immagine mainline (Armbian "resolute", kernel 6.18) che **da microSD non
-dava né video né rete**, scritta sulla **eMMC** (col bootloader incluso) è partita:
-U-Boot a schermo, login su HDMI, Ethernet funzionante, Internet OK. Due dettagli:
+The very same mainline image (Armbian "resolute", kernel 6.18) that **showed no video
+and no network from SD** booted fine when written to the **eMMC** (bootloader included):
+U-Boot on screen, HDMI login, working Ethernet, Internet OK. Two details:
 
-- l'interfaccia di rete non è `eth0` ma **`end0`** (naming predicibile dei kernel
-  recenti): cercare il box per IP/porta 22, non per `eth0`;
-- il Wi-Fi SSV (`wlan0`) resta `DOWN` col mainline — si usa il cavo.
+- the network interface is not `eth0` but **`end0`** (predictable naming on recent
+  kernels): look for the box by IP/port 22, not by `eth0`;
+- the SSV Wi-Fi (`wlan0`) stays `DOWN` on mainline — use the cable.
 
-Morale: per questi box **non fermarsi al fallito boot da SD**, provare comunque la
-scrittura su eMMC. Accesso finale headless via SSH a chiave (la rootfs Armbian è
-scrivibile, quindi `authorized_keys` si installa con un `wget` dalla console).
+Takeaway: for these boxes **don't stop at a failed SD boot**, try writing to eMMC
+anyway. Final headless access via SSH key (the Armbian rootfs is writable, so install
+`authorized_keys` with a `wget` from the console).
 
-Risultato: box da cassetto → mini server Linux headless (4 core, ~970 MB RAM, ~5,8 GB
-liberi, ~2–3 W). Usi sensati: Pi-hole/AdGuard, WireGuard, Syncthing, piccoli servizi.
+Result: a drawer box → a headless Linux mini-server (4 cores, ~970 MB RAM, ~5.8 GB free,
+~2–3 W). Sensible uses: Pi-hole/AdGuard, WireGuard, Syncthing, small services.
 
 ---
 
-## 8. Contenuto del repo
+## 8. Repo contents
 
 ```
 .
-├─ README.md                questo documento
+├─ README.md                this document
 ├─ gipd/
-│  ├─ gipd.c                driver userspace pad Xbox One/GIP → uinput 360
-│  └─ build.sh              build cross con Zig
+│  ├─ gipd.c                userspace Xbox One/GIP pad driver → uinput 360
+│  └─ build.sh              cross build with Zig
 ├─ scripts/
-│  ├─ flash_sd.ps1          scrittura immagine su SD (Windows, con safety check)
-│  └─ rawserve.py           server TCP raw per streammare un file sul box via /dev/tcp
-└─ docs/img/                screenshot
+│  ├─ flash_sd.ps1          write an image to SD (Windows, with safety checks)
+│  └─ rawserve.py           raw TCP file streamer to flash a box via bash /dev/tcp
+└─ docs/img/                screenshots
 ```
 
-Non inclusi nel repo (grandi o proprietari): immagini Armbian/Multitool, APK di
-sistema, sorgenti decompilati, dump delle partizioni.
+Not included (large or proprietary): Armbian/Multitool images, system APKs, decompiled
+sources, partition dumps.
 
-## 9. Strumenti e crediti
+## 9. Tools & credits
 
-- Reverse engineering guidato con **REA — reverse-engineer-anything**
-  (`github.com/morluto/rea`): inventario del device via ADB e il provider Android
-  (jadx-headless-mcp) per la decompilazione.
-- **JADX** per la decompilazione degli APK; **Zig** per la cross-compilazione del
-  driver; **Armbian** (`rk322x-box`) e il **Multitool** di Paolo Sabatino per il
-  passaggio a Linux.
+- Reverse engineering guided with **REA — reverse-engineer-anything**
+  (`github.com/morluto/rea`): device inventory over ADB and the Android provider
+  (jadx-headless-mcp) for decompilation.
+- **JADX** for APK decompilation; **Zig** to cross-compile the driver; **Armbian**
+  (`rk322x-box`) and Paolo Sabatino's **Multitool** for the move to Linux.
 
-## 10. Lezioni rapide
+## 10. Quick lessons
 
-- Il nome commerciale non dice niente: identifica il SoC da `/proc/cpuinfo`.
-- Diffida delle ROM di fabbrica: qui c'era Adups che installa app in silenzio e
-  disattiva le verifiche di sicurezza.
-- 1 GB di RAM + Mali-400 GLES2 = retro fino a PS1, non oltre; media center e piccolo
-  server Linux sono gli usi più sensati.
-- Ecosistema rk322x decaduto: il Multitool è l'ingresso affidabile, e `/dev/tcp` di
-  bash salva quando mancano i tool di download.
-- Backup completo **sempre** prima: il box è quasi impossibile da brickare (BootROM +
-  maskrom via USB), ma recuperare senza backup è noioso.
+- The marketing name tells you nothing: identify the SoC from `/proc/cpuinfo`.
+- Distrust these stock ROMs: this one shipped Adups, installing apps silently and
+  disabling the security checks.
+- 1 GB RAM + Mali-400 GLES2 = retro up to PS1, no further; a media center and a small
+  Linux server are the most sensible uses.
+- The rk322x ecosystem has decayed: the Multitool is the reliable entry point, and
+  bash `/dev/tcp` saves you when download tools are missing.
+- **Always** back up fully first: the box is nearly impossible to permanently brick
+  (BootROM + USB maskrom), but recovering without a backup is tedious.
