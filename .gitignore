@@ -1,0 +1,26 @@
+# Large binaries, proprietary content and working artifacts — not for the repo
+dl/
+backup/
+apks/
+src/
+
+# stray working files at repo root
+*.bin
+/screen*.png
+/n64_*.png
+/dump.sh
+
+# build output
+gipd/gipd
+
+# logs
+*.log
+
+# safety net: never commit secrets (also already under dl/)
+mtkey
+mtkey.pub
+known_hosts
+probe.cmd
+id.pub
+*.ppk
+*.pem
